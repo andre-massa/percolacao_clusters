@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Modelo de Percolação & Epidemia SIR</title>
+
+  <!-- Pyodide: roda Python puro no navegador via WebAssembly -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f3; color: #1a1a18; padding: 1.5rem; max-width: 960px; margin: 0 auto; }
+    h1 { font-size: 20px; font-weight: 500; margin-bottom: 1.25rem; }
+    #loading { font-size: 13px; color: #5f5e5a; margin-bottom: 12px; }
+    .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .ctrl-card { background: #ebebea; border-radius: 8px; padding: 0.75rem 1rem; }
+    .ctrl-card label { font-size: 13px; color: #5f5e5a; display: block; margin-bottom: 6px; }
+    input[type=range] { width: 100%; accent-color: #1D9E75; }
+    .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    button { border: 0.5px solid #aaa; background: transparent; border-radius: 8px; padding: 7px 16px; font-size: 13px; cursor: pointer; color: #1a1a18; transition: background 0.15s; }
+    button:hover { background: #e0e0df; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.primary { background: #1D9E75; color: #fff; border-color: #1D9E75; }
+    button.primary:hover { background: #0F6E56; }
+    button.danger { background: #D85A30; color: #fff; border-color: #D85A30; }
+    button.danger:hover { background: #b04623; }
+    .metrics { display: grid; gap: 8px; margin-bottom: 12px; }
+    .metric { background: #ebebea; border-radius: 8px; padding: 0.6rem 0.8rem; text-align: center; }
+    .metric .mlabel { font-size: 10px; color: #5f5e5a; margin-bottom: 4px; }
+    .metric .mval { font-size: 15px; font-weight: 500; }
+    .metric.percolou .mval { color: #1D9E75; }
+    .metric.nao-percolou .mval { color: #D85A30; }
+    .canvases { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .canvas-wrap { display: flex; flex-direction: column; gap: 6px; }
+    .canvas-wrap .clabel { font-size: 12px; color: #5f5e5a; min-height: 32px; }
+    canvas { border-radius: 8px; border: 0.5px solid #d3d1c7; display: block; width: 100%; }
+    .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    .leg-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #5f5e5a; }
+    .leg-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+    .chart-card { background: #ebebea; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 12px; }
+    .chart-card .ctitle { font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+    .chart-card .csub { font-size: 12px; color: #5f5e5a; margin-top: 6px; }
+    .epidemic-panel { border-left: 4px solid #D85A30; }
+    .frac-panel { border-left: 4px solid #534AB7; }
+    .tab-bar { display: flex; gap: 4px; margin-bottom: 10px; }
+    .tab-btn { padding: 4px 12px; font-size: 12px; border-radius: 6px; border: 0.5px solid #aaa; background: transparent; cursor: pointer; color: #5f5e5a; }
+    .tab-btn.active { background: #1a1a18; color: #fff; border-color: #1a1a18; }
+    .curve-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+    .cl-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #5f5e5a; }
+    .cl-line { width: 18px; height: 3px; border-radius: 2px; flex-shrink: 0; }
+  </style>
+</head>
+<body>
+
+<h1>Modelo de Percolação & Imunidade de Rebanho</h1>
+<div id="loading">⏳ Carregando Python (Pyodide)…</div>
+
+<div class="controls">
+  <div class="ctrl-card">
+    <label>Tamanho da rede N = <span id="nval">200</span></label>
+    <input type="range" id="nrange" min="100" max="400" step="10" value="200">
+  </div>
+  <div class="ctrl-card">
+    <label>Suscetíveis p = <span id="pval">0.59</span></label>
+    <input type="range" id="prange" min="0" max="100" step="1" value="59">
+  </div>
+</div>
+
+<div class="btns">
+  <button class="primary" id="btnGen" disabled>1. Gerar Nova Sociedade</button>
+  <button class="danger"  id="btnInfect" disabled>2. Infectar Paciente Zero</button>
+  <button id="btnPlayPause" disabled>Pausar</button>
+  <button id="btnFractal" disabled>Dimensão Fractal</button>
+</div>
+
+<div class="metrics" style="grid-template-columns: repeat(4, minmax(0,1fr))">
+  <div class="metric"><div class="mlabel">Dia Epidêmico</div><div class="mval" id="mDay">0</div></div>
+  <div class="metric"><div class="mlabel">Infectados Ativos</div><div class="mval" style="color:#D85A30" id="mInf">0</div></div>
+  <div class="metric"><div class="mlabel">Novos Hoje</div><div class="mval" style="color:#BA7517" id="mNew">0</div></div>
+  <div class="metric"><div class="mlabel">Recuperados</div><div class="mval" id="mRec">0</div></div>
+</div>
+
+<div class="metrics" style="grid-template-columns: repeat(4, minmax(0,1fr))">
+  <div class="metric"><div class="mlabel">Suscetíveis</div><div class="mval" id="mOcup">-</div></div>
+  <div class="metric"><div class="mlabel">Grupos Isolados</div><div class="mval" id="mClust">-</div></div>
+  <div class="metric"><div class="mlabel">Maior Grupo</div><div class="mval" id="mMax">-</div></div>
+  <div class="metric" id="mPercCard"><div class="mlabel">Risco Pandemia (Percolação)</div><div class="mval" id="mPerc">-</div></div>
+</div>
+
+<div class="canvases">
+  <div class="canvas-wrap">
+    <span class="clabel" id="labelGrid">Visão Topológica (cores = sub-redes isoladas)</span>
+    <canvas id="cGrid" height="300"></canvas>
+  </div>
+  <div class="canvas-wrap">
+    <span class="clabel">Maior rota de contágio</span>
+    <canvas id="cPerc" height="300"></canvas>
+  </div>
+</div>
+
+<div class="legend" id="legend"></div>
+
+<div class="chart-card epidemic-panel" id="curveWrap" style="display:none">
+  <div class="ctitle">Evolução do Surto</div>
+  <div class="tab-bar">
+    <button class="tab-btn active" id="tabSIR" onclick="switchTab('SIR')">Curvas SIR</button>
+    <button class="tab-btn" id="tabINC" onclick="switchTab('INC')">Novos Infectados / Dia</button>
+  </div>
+  <canvas id="cCurve" height="200"></canvas>
+  <div class="curve-legend" id="curveLegend"></div>
+</div>
+
+<div class="chart-card frac-panel" id="fractalWrap" style="display:none">
+  <div class="ctitle">Box-counting — Dimensão Fractal D<sub>f</sub></div>
+  <canvas id="cFractal" height="200"></canvas>
+  <div class="csub">D<sub>f</sub> = <span id="dfval" style="font-weight:500;color:#1a1a18">-</span> &nbsp;(valor teórico ≈ 1.89)</div>
+</div>
+
+<script>
+// =============================================================
+//  CONSTANTES DE VISUALIZAÇÃO (cores, velocidade)
+// =============================================================
+const PALETTE  = ['#378ADD','#1D9E75','#D85A30','#D4537E','#BA7517','#534AB7','#639922','#A32D2D','#0F6E56','#993C1D'];
+const STEP_MS  = 50;
+
+// =============================================================
+//  ESTADO DA APLICAÇÃO
+//  Estes valores vêm das funções Python e são guardados aqui
+//  apenas para uso pelas funções de desenho.
+// =============================================================
+let N = 200, p = 0.59;
+
+// resultados retornados pelo Python (arrays JS convertidos)
+let grid       = null;   // Uint8Array — grade de percolação
+let labels     = null;   // Int32Array — rótulo de cluster por célula
+let clusterSizes = null; // objeto {raiz: tamanho}
+let percLabel  = -1;     // rótulo do cluster de percolação (-1 = nenhum)
+let sirGrid    = null;   // Uint8Array — estados SIR por célula
+
+// estado da simulação
+let day = 0, animId = null, isPlaying = false, modeView = 'CLUSTERS';
+let historyS = [], historyI = [], historyR = [], historyNew = [];
+let activeTab = 'SIR';
+let reachableS0 = 0;  // suscetíveis no cluster alcançável (base real do pc)
+
+// referência ao módulo Python carregado
+let pyodide = null;
+let pyModule = null;
+
+// =============================================================
+//  INICIALIZAÇÃO: carrega Pyodide e o arquivo percolacao.py
+// =============================================================
+async function initPyodide() {
+  pyodide = await loadPyodide();
+
+  // Carrega o código Python diretamente como string
+  // (em produção, pode usar: await pyodide.loadPackagesFromImports(code) + fetch('percolacao.py'))
+  await pyodide.runPythonAsync(PYTHON_CODE);
+
+  // Expõe as funções Python para o JS
+  pyModule = {
+    make_grid:          pyodide.globals.get('make_grid'),
+    label_clusters:     pyodide.globals.get('label_clusters'),
+    find_perc_cluster:  pyodide.globals.get('find_perc_cluster'),
+    box_counting:       pyodide.globals.get('box_counting'),
+    fractal_dimension:  pyodide.globals.get('fractal_dimension'),
+    init_sir:           pyodide.globals.get('init_sir'),
+    step_sir:           pyodide.globals.get('step_sir'),
+    count_sir_states:   pyodide.globals.get('count_sir_states'),
+  };
+
+  document.getElementById('loading').textContent = '✓ Python carregado — pronto para simular.';
+  // habilita botões
+  ['btnGen','btnInfect','btnFractal'].forEach(id => document.getElementById(id).disabled = false);
+  run(); // gera grade inicial automaticamente
+}
+
+// =============================================================
+//  FUNÇÕES DE DESENHO (canvas) — idênticas ao Percolacao_v3
+// =============================================================
+function drawMainCanvas() {
+  const cv = document.getElementById('cGrid');
+  const W = cv.offsetWidth || 400;
+  cv.width = W; cv.height = W;
+  const ctx = cv.getContext('2d');
+  const cs = W / N;
+
+  if (modeView === 'CLUSTERS') {
+    document.getElementById('labelGrid').textContent = 'Visão Topológica (cores = sub-redes isoladas)';
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, W);
+    const cm = {};
+    Object.keys(clusterSizes).map(Number).sort((a, b) => clusterSizes[b] - clusterSizes[a])
+      .forEach((r, i) => { cm[r] = PALETTE[i % PALETTE.length]; });
+    for (let i = 0; i < N * N; i++) {
+      if (!grid[i]) continue;
+      const r = Math.floor(i / N), c = i % N;
+      ctx.fillStyle = cm[labels[i]] || '#ccc';
+      ctx.fillRect(c * cs, r * cs, Math.max(cs, 0.5), Math.max(cs, 0.5));
+    }
+  } else if (modeView === 'SIR' && sirGrid) {
+    document.getElementById('labelGrid').textContent = 'Simulação SIR em andamento';
+    ctx.fillStyle = '#f0f0ef'; ctx.fillRect(0, 0, W, W);
+    for (let i = 0; i < N * N; i++) {
+      const r = Math.floor(i / N), c = i % N;
+      ctx.fillStyle = sirGrid[i] === 0 ? '#dcdcda' : sirGrid[i] === 1 ? '#ADD8E6' : sirGrid[i] === 2 ? '#D85A30' : '#404040';
+      ctx.fillRect(c * cs, r * cs, Math.max(cs, 0.5), Math.max(cs, 0.5));
+    }
+  }
+}
+
+function drawPercCanvas() {
+  const cv = document.getElementById('cPerc');
+  const W = cv.offsetWidth || 400;
+  cv.width = W; cv.height = W;
+  const ctx = cv.getContext('2d');
+  const cs = W / N;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, W);
+  for (let i = 0; i < N * N; i++) {
+    if (!grid[i]) continue;
+    const r = Math.floor(i / N), c = i % N;
+    ctx.fillStyle = (percLabel >= 0 && labels[i] === percLabel) ? '#1D9E75' : '#B4B2A9';
+    ctx.fillRect(c * cs, r * cs, Math.max(cs, 0.5), Math.max(cs, 0.5));
+  }
+  ctx.strokeStyle = '#D85A30'; ctx.lineWidth = 2; ctx.strokeRect(1, 1, W - 2, W - 2);
+}
+
+function updateLegend() {
+  const leg = document.getElementById('legend');
+  if (modeView === 'CLUSTERS') {
+    const top5 = Object.keys(clusterSizes).map(Number).sort((a, b) => clusterSizes[b] - clusterSizes[a]).slice(0, 5);
+    leg.innerHTML = top5.map((r, i) =>
+      `<div class="leg-item"><div class="leg-dot" style="background:${PALETTE[i]}"></div>Grupo ${i+1} (${clusterSizes[r]} células)</div>`
+    ).join('');
+  } else {
+    leg.innerHTML = `
+      <div class="leg-item"><div class="leg-dot" style="background:#dcdcda"></div>Imune</div>
+      <div class="leg-item"><div class="leg-dot" style="background:#ADD8E6"></div>Suscetível</div>
+      <div class="leg-item"><div class="leg-dot" style="background:#D85A30"></div>Infectado</div>
+      <div class="leg-item"><div class="leg-dot" style="background:#404040"></div>Recuperado</div>`;
+  }
+}
+
+function updateMetrics(inf, rec, newInf) {
+  document.getElementById('mDay').textContent = day;
+  document.getElementById('mInf').textContent = inf;
+  document.getElementById('mRec').textContent = rec;
+  document.getElementById('mNew').textContent = newInf !== undefined ? newInf : 0;
+}
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab' + tab).classList.add('active');
+  drawDynamicCurve();
+}
+
+function drawDynamicCurve() {
+  const cv = document.getElementById('cCurve');
+  const W = cv.parentElement.clientWidth - 32 || 600;
+  cv.width = W; cv.height = 200;
+  const ctx = cv.getContext('2d');
+  const PAD = { t: 36, r: 44, b: 34, l: 52 };
+  const IW = W - PAD.l - PAD.r, IH = 200 - PAD.t - PAD.b;
+
+  ctx.clearRect(0, 0, W, 200);
+  ctx.strokeStyle = 'rgba(0,0,0,0.06)'; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 4; i++) {
+    const y = PAD.t + (i / 4) * IH;
+    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + IW, y); ctx.stroke();
+  }
+  ctx.strokeStyle = '#bbb'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD.l, PAD.t); ctx.lineTo(PAD.l, PAD.t + IH); ctx.lineTo(PAD.l + IW, PAD.t + IH); ctx.stroke();
+  if (!historyS.length) return;
+
+  const totalDays = Math.max(historyI.length - 1, 20);
+  const tx = d => PAD.l + (d / totalDays) * IW;
+
+  function axisY(maxY) {
+    ctx.font = '10px sans-serif'; ctx.fillStyle = '#888'; ctx.textAlign = 'right';
+    [0, Math.round(maxY / 2), maxY].forEach(v => {
+      ctx.fillText(v > 999 ? (v/1000).toFixed(1)+'k' : v, PAD.l - 5, PAD.t + IH - (v / maxY) * IH + 3);
+    });
+    ctx.textAlign = 'center';
+    [0, Math.round(totalDays / 2), totalDays].forEach(v => ctx.fillText(v, tx(v), PAD.t + IH + 16));
+    ctx.fillText('Dias', PAD.l + IW / 2, PAD.t + IH + 28);
+  }
+  function line(data, color, lw, maxY) {
+    if (data.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.beginPath();
+    data.forEach((v, d) => { d === 0 ? ctx.moveTo(tx(d), PAD.t + IH - (v/maxY)*IH) : ctx.lineTo(tx(d), PAD.t + IH - (v/maxY)*IH); });
+    ctx.stroke();
+  }
+  function area(data, color, maxY) {
+    if (data.length < 2) return;
+    ctx.fillStyle = color; ctx.beginPath();
+    ctx.moveTo(tx(0), PAD.t + IH);
+    data.forEach((v, d) => ctx.lineTo(tx(d), PAD.t + IH - (v/maxY)*IH));
+    ctx.lineTo(tx(data.length - 1), PAD.t + IH); ctx.closePath(); ctx.fill();
+  }
+  function dot(d, val, color, maxY) {
+    if (d < 0 || val === undefined) return;
+    const x = tx(d), y = PAD.t + IH - (val/maxY)*IH;
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, 4, 0, 2*Math.PI); ctx.fill();
+    ctx.fillStyle = color; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText(val > 999 ? (val/1000).toFixed(1)+'k' : val, x + 6, y - 2);
+  }
+  function peakLine(data, maxY) {
+    const pk = data.indexOf(Math.max(...data));
+    if (pk <= 0 || pk >= data.length - 1) return;
+    ctx.strokeStyle = 'rgba(216,90,48,0.55)'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(tx(pk), PAD.t); ctx.lineTo(tx(pk), PAD.t + IH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#D85A30'; ctx.textAlign = 'center'; ctx.font = 'bold 10px sans-serif';
+    ctx.fillText('Pico — dia ' + pk, tx(pk), PAD.t - 20);
+  }
+  function pcLine() {
+    if (!historyS.length || reachableS0 === 0) return;
+    // pc = dia em que 59,27% dos suscetíveis ALCANÇÁVEIS foram removidos
+    // (infectados + recuperados acumulados >= 0.592746 × cluster inicial)
+    const threshold = reachableS0 * 0.592746;
+    let pcDay = -1;
+    for (let d = 1; d < historyR.length; d++) {
+      const removed = reachableS0 - historyS[d] + (historyS[0] - reachableS0);
+      if (removed >= threshold) { pcDay = d; break; }
+    }
+    if (pcDay < 0) return;
+    ctx.strokeStyle = 'rgba(29,158,117,0.85)'; ctx.lineWidth = 1.5; ctx.setLineDash([6,3]);
+    ctx.beginPath(); ctx.moveTo(tx(pcDay), PAD.t); ctx.lineTo(tx(pcDay), PAD.t + IH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#0F6E56'; ctx.textAlign = 'center'; ctx.font = 'bold 10px sans-serif';
+    ctx.fillText('pc — dia ' + pcDay, tx(pcDay), PAD.t - 8);
+  }
+
+  const cd = historyI.length - 1;
+  if (activeTab === 'SIR') {
+    const maxY = historyS[0] || 1;
+    axisY(maxY);
+    area(historyI, 'rgba(216,90,48,0.12)', maxY);
+    line(historyS, '#ADD8E6', 2, maxY);
+    line(historyR, '#555', 2, maxY);
+    line(historyI, '#D85A30', 2.5, maxY);
+    peakLine(historyI, maxY); pcLine();
+    dot(cd, historyS[cd], '#378ADD', maxY);
+    dot(cd, historyR[cd], '#555', maxY);
+    dot(cd, historyI[cd], '#D85A30', maxY);
+    document.getElementById('curveLegend').innerHTML = `
+      <div class="cl-item"><div class="cl-line" style="background:#ADD8E6"></div>Suscetíveis</div>
+      <div class="cl-item"><div class="cl-line" style="background:#D85A30"></div>Infectados ativos</div>
+      <div class="cl-item"><div class="cl-line" style="background:#555"></div>Recuperados</div>
+      <div class="cl-item"><div class="cl-line" style="background:rgba(216,90,48,0.55)"></div>Pico de I(t)</div>
+      <div class="cl-item"><div class="cl-line" style="background:#1D9E75"></div>Limiar pc</div>`;
+  } else {
+    const maxY = Math.max(...historyNew, 1);
+    axisY(maxY);
+    const bw = Math.max((IW / Math.max(historyNew.length, 1)) - 1, 1);
+    historyNew.forEach((v, d) => {
+      const ratio = v / maxY;
+      const rr = Math.round(55 + ratio * 200), gg = Math.round(150 - ratio * 80), bb = Math.round(220 - ratio * 150);
+      ctx.fillStyle = `rgb(${rr},${gg},${bb})`;
+      const h = (v / maxY) * IH;
+      ctx.fillRect(tx(d) - bw/2, PAD.t + IH - h, bw, h);
+    });
+    const ma7 = historyNew.map((_, i) => {
+      const w = historyNew.slice(Math.max(0, i-3), i+4);
+      return w.reduce((a, b) => a + b, 0) / w.length;
+    });
+    line(ma7, '#D85A30', 2, maxY);
+    peakLine(historyNew, maxY); pcLine();
+    dot(cd, historyNew[cd], '#BA7517', maxY);
+    document.getElementById('curveLegend').innerHTML = `
+      <div class="cl-item"><div class="cl-line" style="background:#378ADD"></div>Novos infectados/dia</div>
+      <div class="cl-item"><div class="cl-line" style="background:#D85A30"></div>Média móvel 7 dias</div>
+      <div class="cl-item"><div class="cl-line" style="background:#1D9E75"></div>Limiar pc</div>`;
+  }
+}
+
+function drawFractal(cv, bcData) {
+  const ctx = cv.getContext('2d');
+  const W = cv.parentElement.clientWidth - 32 || 600;
+  cv.width = W; cv.height = 200;
+  const PAD={t:10,r:20,b:40,l:55}, IW=W-PAD.l-PAD.r, IH=200-PAD.t-PAD.b;
+  const xs=bcData.map(d=>Math.log(1/d.eps)), ys=bcData.map(d=>Math.log(d.N));
+  const n=xs.length, sx=xs.reduce((a,b)=>a+b,0), sy=ys.reduce((a,b)=>a+b,0);
+  const sxy=xs.reduce((a,x,i)=>a+x*ys[i],0), sx2=xs.reduce((a,x)=>a+x*x,0);
+  const slope=(n*sxy-sx*sy)/(n*sx2-sx*sx), intercept=(sy-slope*sx)/n;
+  const xMin=Math.min(...xs),xMax=Math.max(...xs),yMin=Math.min(...ys),yMax=Math.max(...ys);
+  const tx=x=>PAD.l+(x-xMin)/(xMax-xMin)*IW, ty=y=>PAD.t+(1-(y-yMin)/(yMax-yMin))*IH;
+  ctx.clearRect(0,0,W,200);
+  ctx.strokeStyle='#bbb'; ctx.lineWidth=0.5;
+  ctx.beginPath();ctx.moveTo(PAD.l,PAD.t);ctx.lineTo(PAD.l,PAD.t+IH);ctx.lineTo(PAD.l+IW,PAD.t+IH);ctx.stroke();
+  ctx.font='11px sans-serif'; ctx.fillStyle='#888';
+  ctx.textAlign='center';[xMin,(xMin+xMax)/2,xMax].forEach(v=>ctx.fillText(v.toFixed(1),tx(v),PAD.t+IH+20));
+  ctx.textAlign='right';[yMin,(yMin+yMax)/2,yMax].forEach(v=>ctx.fillText(v.toFixed(1),PAD.l-6,ty(v)+4));
+  ctx.textAlign='center'; ctx.fillText('ln(1/ε)',PAD.l+IW/2,PAD.t+IH+36);
+  ctx.save();ctx.translate(14,PAD.t+IH/2);ctx.rotate(-Math.PI/2);ctx.fillText('ln N(ε)',0,0);ctx.restore();
+  ctx.strokeStyle='#534AB7'; ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(tx(xMin),ty(slope*xMin+intercept));ctx.lineTo(tx(xMax),ty(slope*xMax+intercept));ctx.stroke();
+  ctx.fillStyle='#378ADD';
+  xs.forEach((x,i)=>{ctx.beginPath();ctx.arc(tx(x),ty(ys[i]),4,0,2*Math.PI);ctx.fill();});
+  document.getElementById('dfval').textContent=slope.toFixed(3);
+}
+
+// =============================================================
+//  ORQUESTRAÇÃO — chama Python e usa o resultado no canvas
+// =============================================================
+
+function run() {
+  clearTimeout(animId);
+  isPlaying = false; modeView = 'CLUSTERS';
+  document.getElementById('btnPlayPause').disabled = true;
+  document.getElementById('btnPlayPause').textContent = 'Pausar';
+  document.getElementById('curveWrap').style.display = 'none';
+  document.getElementById('fractalWrap').style.display = 'none';
+  document.getElementById('dfval').textContent = '-';
+
+  N = parseInt(document.getElementById('nrange').value);
+  p = parseInt(document.getElementById('prange').value) / 100;
+
+  // ── chama Python ──
+  const pyGrid   = pyModule.make_grid(N, p);
+  const pyResult = pyModule.label_clusters(pyGrid, N);
+  const pyLabels = pyResult.get(0);
+  const pySizes  = pyResult.get(1);
+  const pyPerc   = pyModule.find_perc_cluster(pyLabels, pySizes, N);
+
+  // converte resultados Python → JS
+  grid        = Array.from(pyGrid.toJs());
+  labels      = Array.from(pyLabels.toJs());
+  clusterSizes= Object.fromEntries(pySizes.toJs());
+  percLabel   = pyPerc;
+
+  // atualiza métricas
+  document.getElementById('mOcup').textContent  = grid.reduce((a, v) => a + v, 0);
+  document.getElementById('mClust').textContent = Object.keys(clusterSizes).length;
+  document.getElementById('mMax').textContent   = Math.max(...Object.values(clusterSizes));
+  const el = document.getElementById('mPerc'), card = document.getElementById('mPercCard');
+  if (percLabel >= 0) { el.textContent = 'Sim ✓'; card.className = 'metric percolou'; }
+  else                { el.textContent = 'Não ✗'; card.className = 'metric nao-percolou'; }
+
+  drawMainCanvas();
+  drawPercCanvas();
+  updateLegend();
+  updateMetrics(0, 0, 0);
+}
+
+function infectPatientZero() {
+  clearTimeout(animId);
+
+  // ── chama Python para inicializar SIR ──
+  const pyGrid = pyodide.toPy(grid);
+  const pySir  = pyModule.init_sir(pyGrid, N);
+  sirGrid = Array.from(pySir.toJs());
+
+  day = 0;
+  const s0 = sirGrid.filter(v => v === 1).length;
+  historyS = [s0]; historyI = [0]; historyR = [0]; historyNew = [0];
+
+  // escolhe paciente zero no cluster de percolação (ou no maior cluster)
+  let candidates = [];
+  if (percLabel >= 0) {
+    candidates = labels.map((l, i) => l === percLabel ? i : -1).filter(i => i >= 0);
+  } else {
+    const lr = Object.keys(clusterSizes).reduce((a, b) => clusterSizes[a] > clusterSizes[b] ? a : b, -1);
+    candidates = labels.map((l, i) => l == lr ? i : -1).filter(i => i >= 0);
+  }
+  if (!candidates.length) { alert('Sem população suscetível.'); return; }
+
+  // tamanho do cluster alcançável = base real para o cálculo do pc
+  reachableS0 = candidates.length;
+
+  const idx = candidates[Math.floor(candidates.length / 2)];
+  sirGrid[idx] = 2;
+  historyI[0] = 1; historyS[0]--; historyNew[0] = 1;
+
+  modeView = 'SIR';
+  updateLegend();
+  document.getElementById('curveWrap').style.display = 'block';
+  isPlaying = true;
+  document.getElementById('btnPlayPause').disabled = false;
+  document.getElementById('btnPlayPause').textContent = 'Pausar';
+  drawMainCanvas();
+  drawDynamicCurve();
+  animId = setTimeout(stepSIR, STEP_MS);
+}
+
+function stepSIR() {
+  if (!isPlaying) return;
+
+  // ── chama Python para um passo da simulação ──
+  const pySir    = pyodide.toPy(sirGrid);
+  const pyResult = pyModule.step_sir(pySir, N);
+
+  sirGrid    = Array.from(pyResult.get(0).toJs());
+  const newInf    = pyResult.get(1);
+  const hasActive = pyResult.get(2);
+
+  // conta estados via Python
+  const pyCounts = pyModule.count_sir_states(pyodide.toPy(sirGrid));
+  const sC = pyCounts.get(0), iC = pyCounts.get(1), rC = pyCounts.get(2);
+
+  day++;
+  historyS.push(sC); historyI.push(iC); historyR.push(rC); historyNew.push(newInf);
+
+  updateMetrics(iC, rC, newInf);
+  drawMainCanvas();
+  drawDynamicCurve();
+
+  if (hasActive && iC > 0) {
+    animId = setTimeout(stepSIR, STEP_MS);
+  } else {
+    isPlaying = false;
+    document.getElementById('btnPlayPause').textContent = 'Fim do Surto';
+    document.getElementById('btnPlayPause').disabled = true;
+    drawDynamicCurve();
+  }
+}
+
+// =============================================================
+//  EVENTOS
+// =============================================================
+document.getElementById('nrange').addEventListener('input', e => document.getElementById('nval').textContent = e.target.value);
+document.getElementById('prange').addEventListener('input', e => document.getElementById('pval').textContent = (e.target.value/100).toFixed(2));
+document.getElementById('btnGen').addEventListener('click', run);
+document.getElementById('btnInfect').addEventListener('click', infectPatientZero);
+document.getElementById('btnPlayPause').addEventListener('click', () => {
+  isPlaying = !isPlaying;
+  document.getElementById('btnPlayPause').textContent = isPlaying ? 'Pausar' : 'Continuar';
+  if (isPlaying) stepSIR();
+});
+document.getElementById('btnFractal').addEventListener('click', () => {
+  if (!labels) { alert('Gere a rede primeiro!'); return; }
+  const pyLabels  = pyodide.toPy(labels);
+  const pySizes   = pyodide.toPy(clusterSizes);
+  const pyBcData  = pyModule.box_counting(pyLabels, percLabel, N);
+  const bcList    = pyBcData.toJs();
+  if (!bcList.length) { alert('Sem cluster de percolação. Aumente p acima de 0.59.'); return; }
+  // converte para formato JS esperado por drawFractal
+  const bcData = bcList.map(item => ({ eps: item.get('eps'), N: item.get('N') }));
+  document.getElementById('fractalWrap').style.display = 'block';
+  setTimeout(() => drawFractal(document.getElementById('cFractal'), bcData), 10);
+});
+
+// =============================================================
+//  CÓDIGO PYTHON EMBUTIDO
+//  Conteúdo de percolacao.py — injetado para que o Pyodide
+//  não precise de um servidor HTTP para fazer fetch.
+// =============================================================
+
+const PYTHON_CODE = `
+"""
+percolacao.py
+=============
+Funções computacionais do modelo de percolação + simulação SIR.
+
+Não há nenhuma dependência de interface gráfica aqui.
+
+Constante central:
+    PC_SITE_SQUARE = 0.592746  — limiar crítico de percolação de sítios
+    na rede quadrada 2D, determinado por simulações de Monte Carlo de
+    alta precisão (Newman & Ziff, 2000: pc = 0.59274602 ± 0.00000004).
+"""
+
+import random
+import math
+
+PC_SITE_SQUARE = 0.592746
+
+
+def make_grid(n, p):
+    """
+    Gera uma grade nxn onde cada célula é ocupada (1) com probabilidade p.
+    Retorna uma lista plana de inteiros (0 ou 1) com n*n elementos.
+    Índice: i = row * n + col
+    """
+    return [1 if random.random() < p else 0 for _ in range(n * n)]
+
+
+def label_clusters(grid, n):
+    """
+    Encontra todos os clusters de células ocupadas usando Union-Find.
+
+    Retorna:
+        labels : lista com o rótulo (raiz canônica) de cada célula,
+                 -1 para células vazias.
+        sizes  : dicionário {raiz: tamanho} de cada cluster.
+    """
+    parent = list(range(n * n))   # cada célula começa sendo sua própria raiz
+    rank   = [0] * (n * n)
+
+    def find(x):
+        # path compression
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        a, b = find(a), find(b)
+        if a == b:
+            return
+        # union by rank
+        if rank[a] < rank[b]:
+            a, b = b, a
+        parent[b] = a
+        if rank[a] == rank[b]:
+            rank[a] += 1
+
+    # une vizinhos ocupados (4-conectividade: cima e esquerda)
+    for i in range(n * n):
+        if not grid[i]:
+            continue
+        r, c = divmod(i, n)
+        if r > 0 and grid[i - n]:
+            union(i, i - n)
+        if c > 0 and grid[i - 1]:
+            union(i, i - 1)
+
+    # monta labels e conta tamanhos
+    labels = [-1] * (n * n)
+    sizes  = {}
+    for i in range(n * n):
+        if grid[i]:
+            root = find(i)
+            labels[i] = root
+            sizes[root] = sizes.get(root, 0) + 1
+
+    return labels, sizes
+
+
+def find_perc_cluster(labels, sizes, n):
+    """
+    Verifica se existe um cluster que toca a linha 0 (topo)
+    e a linha n-1 (base) ao mesmo tempo.
+
+    Retorna o rótulo do maior cluster percolante, ou -1 se não existir.
+    """
+    top_roots = set()
+    for c in range(n):
+        lbl = labels[c]          # linha 0
+        if lbl >= 0:
+            top_roots.add(lbl)
+
+    best, best_size = -1, 0
+    for c in range(n):
+        lbl = labels[(n - 1) * n + c]   # linha n-1
+        if lbl >= 0 and lbl in top_roots:
+            s = sizes.get(lbl, 0)
+            if s > best_size:
+                best_size = s
+                best = lbl
+
+    return best
+
+
+
+def box_counting(labels, perc_label, n):
+    """
+    Estima a dimensão fractal do cluster de percolação pelo método de box-counting.
+
+    Para cada escala b = 1, 2, ..., log2(n):
+        - cobre o cluster com caixas de lado 2^b
+        - conta quantas caixas contêm ao menos uma célula do cluster
+
+    Retorna lista de dicionários: [{'eps': float, 'N': int}, ...]
+        eps = tamanho relativo da caixa (2^b / n)
+        N   = número de caixas ocupadas
+    """
+    if perc_label < 0:
+        return []
+
+    cells = [(i // n, i % n) for i, lbl in enumerate(labels) if lbl == perc_label]
+    if not cells:
+        return []
+
+    results = []
+    max_pow = int(math.log2(n))
+
+    for b in range(0, max_pow + 1):
+        bs = 2 ** b
+        boxes = set()
+        for r, c in cells:
+            boxes.add((r // bs, c // bs))
+        results.append({'eps': bs / n, 'N': len(boxes)})
+
+    return results
+
+
+def lin_reg(xs, ys):
+    """
+    Regressão linear simples por mínimos quadrados.
+    Retorna (slope, intercept).
+    """
+    n   = len(xs)
+    sx  = sum(xs)
+    sy  = sum(ys)
+    sxy = sum(x * y for x, y in zip(xs, ys))
+    sx2 = sum(x * x for x in xs)
+
+    slope     = (n * sxy - sx * sy) / (n * sx2 - sx * sx)
+    intercept = (sy - slope * sx) / n
+    return slope, intercept
+
+
+def fractal_dimension(box_data):
+    """
+    Calcula Df a partir dos dados de box-counting.
+    Df = inclinação de ln(N) x ln(1/eps).
+    """
+    if len(box_data) < 4:
+        data = box_data
+    else: 
+        data = box_data[1:-1]  
+        
+    if len(data) < 2:
+        return float('nan')  # não dá para estimar Df com menos de 2 pontos
+    xs = [math.log(1 / d['eps']) for d in box_data]
+    ys = [math.log(d['N'])       for d in box_data]
+    slope, _ = lin_reg(xs, ys)
+    return slope
+
+
+
+def init_sir(grid, n):
+    """
+    Inicializa a simulação SIR a partir da grade de percolação.
+
+    Estados:
+        0 = imune - (célula vazia) 
+        1 = suscetível
+        2 = infectado
+        3 = recuperado
+
+    Retorna a grade SIR como lista de inteiros.
+    """
+    return [1 if cell else 0 for cell in grid]
+
+
+def step_sir(sir_grid, n):
+    """
+    Executa um passo da simulação SIR determinística:
+        - Cada infectado (2) infecta todos os vizinhos suscetíveis (1) em cruz (4-conectividade)
+        - Depois passa imediatamente para recuperado (3)
+
+    Retorna:
+        new_grid      : nova grade SIR após o passo
+        newly_infected: número de novas infecções neste passo
+        has_active    : True se ainda há infectados ativos
+    """
+    new_grid = list(sir_grid)
+    newly_infected = 0
+    has_active = False
+
+    for i in range(n * n):
+        if sir_grid[i] != 2:
+            continue
+        has_active = True
+        r, c = divmod(i, n)
+
+        # infecta vizinhos suscetíveis (4-conectividade)
+        neighbors = []
+        if r > 0:     neighbors.append(i - n)
+        if r < n - 1: neighbors.append(i + n)
+        if c > 0:     neighbors.append(i - 1)
+        if c < n - 1: neighbors.append(i + 1)
+
+        for nb in neighbors:
+            if sir_grid[nb] == 1 and new_grid[nb] == 1:
+                new_grid[nb] = 2
+                newly_infected += 1
+
+        # infectado passa a recuperado no mesmo passo
+        new_grid[i] = 3
+
+    return new_grid, newly_infected, has_active
+
+
+def perc_threshold_day(history_s, reachable_s0):
+    """
+    Encontra o dia em que a simulação SIR cruza o limiar crítico pc.
+
+    O critério é: quando a fração de suscetíveis ALCANÇÁVEIS já removidos
+    (infectados + recuperados) ultrapassa PC_SITE_SQUARE = 0.592746.
+
+    Por que usar reachable_s0 e não o total da grade?
+    Suscetíveis em clusters isolados nunca são atingidos pela infecção.
+    Usá-los como base inflaria o denominador e o threshold nunca seria
+    cruzado. A base correta é o tamanho do cluster onde a infecção corre.
+
+    Parâmetros:
+        history_s    : lista com S(t) a cada passo da simulação
+        reachable_s0 : tamanho do cluster alcançável (candidatos ao paciente zero)
+
+    Retorna:
+        Dia (índice inteiro) em que pc é cruzado, ou -1 se nunca ocorrer.
+    """
+    if not history_s or reachable_s0 <= 0:
+        return -1
+
+    threshold = reachable_s0 * PC_SITE_SQUARE
+
+    # Desconto de suscetíveis isolados (não alcançáveis)
+    isolated = history_s[0] - reachable_s0
+
+    for day, s in enumerate(history_s[1:], start=1):
+        removed = reachable_s0 - (s - isolated)
+        if removed >= threshold:
+            return day
+
+    return -1
+
+
+def count_sir_states(sir_grid):
+    """
+    Conta as células em cada estado SIR.
+    Retorna (suscetíveis, infectados, recuperados).
+    """
+    s = sir_grid.count(1)
+    i = sir_grid.count(2)
+    r = sir_grid.count(3)
+    return s, i, r
+
+`;
+
+// Inicializa Pyodide ao carregar a página
+initPyodide();
+</script>
+</body>
+</html>
