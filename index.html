@@ -676,12 +676,13 @@ def box_counting(labels, perc_label, n):
     results = []
     max_pow = int(math.log2(n))
 
-    for b in range(0, max_pow + 1):
+    for b in range(0, max_pow):
         bs = 2 ** b
         boxes = set()
         for r, c in cells:
             boxes.add((r // bs, c // bs))
-        results.append({'eps': bs / n, 'N': len(boxes)})
+        nboxes_side = math.ceil(n / bs)
+        results.append({'eps': 1.0 / nboxes_side, 'N': len(boxes)})
 
     return results
 
@@ -706,16 +707,18 @@ def fractal_dimension(box_data):
     """
     Calcula Df a partir dos dados de box-counting.
     Df = inclinação de ln(N) x ln(1/eps).
+
+    Descarta a escala mais fina (efeito de pixel) e a mais grossa
+    (poucas caixas, alta variância). O ajuste é feito apenas na
+    região de escala intermediária.
     """
-    if len(box_data) < 4:
-        data = box_data
-    else: 
-        data = box_data[1:-1]  
-        
+    if len(box_data) < 2:
+        return None
+    data = box_data[1:-1] if len(box_data) >= 4 else box_data
     if len(data) < 2:
-        return float('nan')  # não dá para estimar Df com menos de 2 pontos
-    xs = [math.log(1 / d['eps']) for d in box_data]
-    ys = [math.log(d['N'])       for d in box_data]
+        return None
+    xs = [math.log(1 / d['eps']) for d in data]
+    ys = [math.log(d['N'])       for d in data]
     slope, _ = lin_reg(xs, ys)
     return slope
 
